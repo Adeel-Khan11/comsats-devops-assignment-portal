@@ -1,3 +1,4 @@
+
 name: Assignment Portal CI and Report
 
 on:
@@ -10,9 +11,14 @@ permissions:
   contents: read
 
 jobs:
+
+  # ==========================================
+  # JOB 1: AUTOMATED TESTING AND JSON REPORT
+  # ==========================================
   test:
     name: Automated test stage
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -24,13 +30,16 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Execute automated tests
         id: tests
         run: python -m pytest -q
 
-      - name: Build complete JSON report, even after test failure
+      # Generate report even when tests fail
+      - name: Build complete JSON report
         if: ${{ always() }}
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -42,7 +51,8 @@ jobs:
           TEST_STEP_OUTCOME: ${{ steps.tests.outcome }}
         run: python scripts/build_report.py
 
-      - name: Upload JSON report for delivery job
+      # Upload report for next job
+      - name: Upload JSON report
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -51,30 +61,38 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ==========================================
+  # JOB 2: LOCAL REPORT + AUTOMATIC EMAIL
+  # ==========================================
   report:
     name: Deliver report to local computer and email
+
     needs: test
     if: ${{ always() }}
+
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository for email script
+      - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Download JSON report from test stage
+      - name: Download JSON report
         uses: actions/download-artifact@v4
         with:
           name: test-report
           path: .
 
+      # Send report to your computer
       - name: Send report to local computer
         env:
           REPORT_RECEIVER_URL: ${{ secrets.REPORT_RECEIVER_URL }}
           REPORT_RECEIVER_TOKEN: ${{ secrets.REPORT_RECEIVER_TOKEN }}
         run: |
           if [ -z "$REPORT_RECEIVER_URL" ] || [ -z "$REPORT_RECEIVER_TOKEN" ]; then
-            echo "::error::Set REPORT_RECEIVER_URL and REPORT_RECEIVER_TOKEN in GitHub repository Actions secrets."
+            echo "::error::Report receiver secrets are missing."
             exit 1
           fi
+
           curl --fail-with-body --show-error --silent \
             --retry 3 --retry-delay 2 --retry-all-errors \
             -X POST "$REPORT_RECEIVER_URL" \
@@ -82,31 +100,49 @@ jobs:
             -H "Content-Type: application/json" \
             --data-binary @testreport.json
 
-      - name: Send optional email report
+      # Send email even if local delivery fails
+      - name: Send automatic email report
         if: ${{ always() }}
-        continue-on-error: true
         env:
           MAIL_HOST: ${{ secrets.MAIL_HOST }}
-          MAIL_PORT: ${{ secrets.MAIL_PORT }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT || '587' }}
           MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
           MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-          MAIL_USE_SSL: ${{ secrets.MAIL_USE_SSL }}
+          MAIL_USE_SSL: ${{ secrets.MAIL_USE_SSL || 'false' }}
         run: python scripts/send_email.py
 
+  # ==========================================
+  # JOB 3: CONDITIONAL GITHUB PAGES DEPLOYMENT
+  # ==========================================
   deploy-pages:
     name: Deploy static demo to GitHub Pages
-    needs: [test, report]
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test.result == 'success' }}
+
+    needs:
+      - test
+      - report
+
+    # Deploy only after successful tests on main
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/main' &&
+        needs.test.result == 'success'
+      }}
+
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       pages: write
       id-token: write
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
