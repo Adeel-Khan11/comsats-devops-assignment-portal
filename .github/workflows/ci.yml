@@ -1,0 +1,124 @@
+name: Assignment Portal CI and Report
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Automated test stage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Execute automated tests
+        id: tests
+        run: pytest -q
+
+      - name: Build complete JSON report, even after test failure
+        if: ${{ always() }}
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          TEST_STEP_OUTCOME: ${{ steps.tests.outcome }}
+        run: python scripts/build_report.py
+
+      - name: Upload JSON report for delivery job
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: testreport.json
+          if-no-files-found: error
+          retention-days: 1
+
+  report:
+    name: Deliver report to local computer and email
+    needs: test
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository for email script
+        uses: actions/checkout@v7
+
+      - name: Download JSON report from test stage
+        uses: actions/download-artifact@v4
+        with:
+          name: test-report
+          path: .
+
+      - name: Send report to local computer
+        env:
+          REPORT_RECEIVER_URL: ${{ secrets.REPORT_RECEIVER_URL }}
+          REPORT_RECEIVER_TOKEN: ${{ secrets.REPORT_RECEIVER_TOKEN }}
+        run: |
+          if [ -z "$REPORT_RECEIVER_URL" ] || [ -z "$REPORT_RECEIVER_TOKEN" ]; then
+            echo "::error::Set REPORT_RECEIVER_URL and REPORT_RECEIVER_TOKEN in GitHub repository Actions secrets."
+            exit 1
+          fi
+          curl --fail-with-body --show-error --silent \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            -X POST "$REPORT_RECEIVER_URL" \
+            -H "Authorization: Bearer $REPORT_RECEIVER_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @testreport.json
+
+      - name: Send optional email report
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          MAIL_HOST: ${{ secrets.MAIL_HOST }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_USE_SSL: ${{ secrets.MAIL_USE_SSL }}
+        run: python scripts/send_email.py
+
+  deploy-pages:
+    name: Deploy static demo to GitHub Pages
+    needs: [test, report]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload static website
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
