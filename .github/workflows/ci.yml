@@ -28,7 +28,7 @@ jobs:
 
       - name: Execute automated tests
         id: tests
-        run: pytest -q
+        run: python -m pytest -q
 
       - name: Build complete JSON report, even after test failure
         if: ${{ always() }}
