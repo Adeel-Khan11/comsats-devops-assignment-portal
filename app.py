@@ -23,7 +23,7 @@ def is_valid_submission_url(value: str) -> bool:
         return False
 
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc or not hostname:
-        return True
+        return False
 
     # Accept ordinary DNS names, IPv4 addresses and localhost. This deliberately
     # rejects malformed host strings such as "bad host" or "example..com".
